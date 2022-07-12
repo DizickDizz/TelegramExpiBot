@@ -1,4 +1,5 @@
 ﻿using SQLite;
+using SQLiteNetExtensions.Extensions;
 using System;
 using System.Text;
 using Telegram.Bot;
@@ -15,12 +16,13 @@ namespace TelegramBot
         private static ReceiverOptions? receiverOptions;
         private static List<UserDescription> Users = new List<UserDescription>();
         private static string DBpaht = $"{Environment.CurrentDirectory}/data.db";
+        private static List<String> Gifs = new List<String>();
 
         static async Task Main(string[] args)
         {
             Init();
             Load();
-
+            Fill(Gifs);
             using var cts = new CancellationTokenSource();
             client = new TelegramBotClient(token);
             client.StartReceiving(
@@ -47,42 +49,59 @@ namespace TelegramBot
                 return;
 
             var chatId = message.Chat.Id;
-            var User = message.From.Username;
-            var UserId = message.From;
+            var UserName = message.From.Username;
+            var UserId = message.From.Id;
             
             var chatName = message.Chat.Title;
+            var flag = false;
 
-
-            var NeededUser = Users.Find(x => x.UserId == UserId.ToString() && x.ChatId == chatId.ToString());
-            if (NeededUser == null)
+            var NeededUser = Users.Find(x => x.UserId == UserId);
+            if (NeededUser != null)
             {
-                Users.Add(new UserDescription(User.ToString(), chatId.ToString(), UserId.ToString(), chatName?.ToString()));
-                Users.Last().XPGain(messageText);
-                Console.WriteLine($"Received a '{Users.Last().XP}' message in chat {chatId}.");
+                foreach (var user in NeededUser.UserStatistics)
+                {
+                    if (chatId == user.ChatId)
+                    {
+                        if (messageText != "/xp" && messageText != "/leaderboard") user.XPGain(messageText);
+                        Console.WriteLine($"Received a '{NeededUser.UserStatistics.Last().XP}' message in chat {chatId}.");
+                        flag = true;
+                        break;
+                    }
+                }
+                if (!flag)
+                {
+                    NeededUser.UserStatistics.Add(new UserStatistic(chatId, chatName));
+                    if (messageText != "/xp" && messageText != "/leaderboard") NeededUser.UserStatistics.Last().XPGain(messageText);
+                    Console.WriteLine($"Received a '{NeededUser.UserStatistics.Last().XP}' message in chat {chatId}.");
+                }
+                flag = false;
             }
             else
             {
-                NeededUser.XPGain(messageText);
-                Console.WriteLine($"Received a '{NeededUser.XP}' message in chat {chatId}.");
+                var userDescription = new UserDescription(UserName.ToString(), UserId);
+                userDescription.AddStatistic(new UserStatistic(chatId, chatName));
+                if (messageText != "/xp" && messageText != "/leaderboard") userDescription.UserStatistics.Last().XPGain(messageText);
+                Users.Add(userDescription);
+                Console.WriteLine($"Received a '{userDescription.UserStatistics.Last().XP}' message in chat {chatId}.");
             }
 
             //XP
             if (messageText.ToLower() == "/xp")
             {
-                NeededUser = Users.Find(x => x.UserId == UserId.ToString() && x.ChatId == chatId.ToString());
+                NeededUser = Users.Find(x => x.UserId == UserId);
+                var NeededStatistic = NeededUser.UserStatistics.Find(x => x.ChatId == chatId);
+
                 Message sentMessage = await botClient.SendTextMessageAsync(
                     chatId: chatId,
-                    text: $"LVL: {NeededUser.LVL} \n XP: {NeededUser.XP} \n До следующего уровня осталось {NeededUser.TresHold-NeededUser.XP} xp",
+                    text: $"LVL: {NeededStatistic.LVL} \n XP: {NeededStatistic.XP} \n До следующего уровня осталось {100 - NeededStatistic.XPToNextLVL}% ",
                     cancellationToken: cancellationToken);
             }
 
             //SendSticker
-            var Gifs = new List<String>();
-            Fill(Gifs);
-            var rnd = new Random();
-            var gifNum = rnd.Next(0, 4);
             if (messageText.ToLower().Contains("/crim"))
             {
+                var rnd = new Random();
+                var gifNum = rnd.Next(0, 4);
                 Message sentMessage = await botClient.SendStickerAsync(
                 chatId: chatId,
                 sticker: Gifs[gifNum],
@@ -92,34 +111,44 @@ namespace TelegramBot
             //LeaderBoard
             if (messageText.ToLower() == "/leaderboard")
             {
-                var sb = new StringBuilder(); 
-                var SortedUsers = Users.FindAll(x => x.ChatId == chatId.ToString()).OrderByDescending(x => x.ToTalXP).Take(3);
-                foreach (var user in SortedUsers)
+                var sb = new StringBuilder();
+                var NeededStatistic = new List<UserStatisticWithUserName>();
+                foreach (var user in Users)
                 {
-                    sb.AppendLine($"{user.UserName}, LVL: {user.LVL}, TotalXP: {user.ToTalXP}");
+                    foreach (var userStatistic in user.UserStatistics)
+                    {
+                        if (userStatistic.ChatId == chatId)
+                            NeededStatistic.Add(new UserStatisticWithUserName(user.UserName,chatId,userStatistic.ChatName,userStatistic.XP, userStatistic.LVL));
+                    }
                 }
-                
+                var SortedNeededStatistic = NeededStatistic.OrderByDescending(x => x.XP).Take(3);
+        
+
+                foreach (var statistic in SortedNeededStatistic)
+                {
+                    sb.AppendLine($"{statistic.UserName}, LVL: {statistic.LVL}, XP: {statistic.XP}");
+                }
                 Message sentMessage = await botClient.SendTextMessageAsync(
                     chatId: chatId,
-                    text:sb.ToString(),
+                    text:$"🏆{sb.ToString()}",
                     cancellationToken: cancellationToken);
             }
 
             //TotalRation
-            if (messageText.ToLower() == "/totalrating")
-            {
-                var sb = new StringBuilder();
-                var SortedUsers = Users.FindAll(x => x.UserName == User.ToString() && x.ChatName != null).OrderByDescending(x => x.ToTalXP);
-                foreach (var user in SortedUsers)
-                {
-                    sb.AppendLine($"{user.ChatName}, LVL: {user.LVL}, TotalXP: {user.ToTalXP}");
-                }
+            //if (messageText.ToLower() == "/totalrating")
+            //{
+            //    var sb = new StringBuilder();
+            //    var SortedUsers = Users.FindAll(x => x.UserName == UserName.ToString() && x.ChatName != null).OrderByDescending(x => x.ToTalXP);
+            //    foreach (var user in SortedUsers)
+            //    {
+            //        sb.AppendLine($"{user.ChatName}, LVL: {user.LVL}, TotalXP: {user.ToTalXP}");
+            //    }
 
-                Message sentMessage = await botClient.SendTextMessageAsync(
-                    chatId: chatId,
-                    text: sb.ToString(),
-                    cancellationToken: cancellationToken);
-            }
+            //    Message sentMessage = await botClient.SendTextMessageAsync(
+            //        chatId: chatId,
+            //        text: sb.ToString(),
+            //        cancellationToken: cancellationToken);
+            //}
             Save();
         }
 
@@ -148,7 +177,9 @@ namespace TelegramBot
         public static void Init()
         {
             var db = new SQLiteConnection(DBpaht);
+            
             db.CreateTable<UserDescription>();
+            db.CreateTable<UserStatistic>();
         }
         public static void Save()
         {
@@ -159,12 +190,29 @@ namespace TelegramBot
                 if (user.Id == 0)
                     db.Insert(user);
                 else db.Update(user);
+                foreach (var statistic in user.UserStatistics)
+                {
+                    if (statistic.Id == 0)
+                        db.Insert(statistic);
+                    else db.Update(statistic);
+                }
+                db.UpdateWithChildren(user);
             }
         }
         public static void Load()
         {
             var db = new SQLiteConnection(DBpaht);
-            Users = db.Table<UserDescription>().ToList();
+
+            Users = db.GetAllWithChildren<UserDescription>();
+            foreach (var user in Users)
+            {
+                foreach (var statistic in user.UserStatistics)
+                {
+                    statistic.LVLUPCheck();
+                }
+            }
+            
+
         }
 
         #endregion
